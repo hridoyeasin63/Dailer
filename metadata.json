@@ -1,0 +1,6 @@
+{
+  "name": "Phone",
+  "description": "A sleek, full-featured Phone and Dialer app with smart T9 search, call history, in-call screen, incoming call gesture controls, and Material 3 design.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
