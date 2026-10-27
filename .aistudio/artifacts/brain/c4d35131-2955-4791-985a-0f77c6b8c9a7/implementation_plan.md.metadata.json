@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan to support real device call history (CallLog.Calls), dual SIM detection and selection sheet, and actual cellular telecom call execution.",
+  "updatedAt":  "2026-10-27T13:33:13.501897572Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
