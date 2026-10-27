@@ -221,7 +221,16 @@ fun DialerApp(viewModel: DialerViewModel) {
                 onBlockNumber = { number -> viewModel.blockNumber(number) },
                 onOpenMenu = { scope.launch { drawerState.open() } },
                 onViewContacts = { viewModel.setScreen(Screen.CONTACTS) },
-                onOpenKeypad = { viewModel.setScreen(Screen.KEYPAD) }
+                onOpenKeypad = { viewModel.setScreen(Screen.KEYPAD) },
+                isDefaultDialer = isDefaultDialer,
+                onRequestDefaultDialer = {
+                  val requestIntent = viewModel.getRequestDefaultDialerIntent()
+                  if (requestIntent != null) {
+                    defaultDialerLauncher.launch(requestIntent)
+                  } else {
+                    viewModel.showSnackbar("This app is already your default dialer")
+                  }
+                }
               )
 
               Screen.KEYPAD -> KeypadScreen(

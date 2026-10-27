@@ -41,6 +41,14 @@ import com.example.ui.theme.BackgroundLight
 import com.example.ui.theme.PhoneBlue
 import com.example.ui.theme.PhoneBlueText
 
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.PhoneInTalk
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
@@ -55,6 +63,8 @@ fun HomeScreen(
   onOpenMenu: () -> Unit,
   onViewContacts: () -> Unit,
   onOpenKeypad: () -> Unit,
+  isDefaultDialer: Boolean = true,
+  onRequestDefaultDialer: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val filteredRecords = remember(callHistory, searchQuery, selectedFilter) {
@@ -94,6 +104,63 @@ fun HomeScreen(
       onMenuClick = onOpenMenu,
       onViewContactsClick = onViewContacts
     )
+
+    if (!isDefaultDialer) {
+      Card(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 16.dp, vertical = 6.dp)
+          .testTag("default_dialer_banner"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F0FE)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(14.dp),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Box(
+            modifier = Modifier
+              .size(40.dp)
+              .background(Color(0xFF1A73E8), CircleShape),
+            contentAlignment = Alignment.Center
+          ) {
+            Icon(
+              imageVector = Icons.Default.PhoneInTalk,
+              contentDescription = null,
+              tint = Color.White,
+              modifier = Modifier.size(22.dp)
+            )
+          }
+          Spacer(modifier = Modifier.width(12.dp))
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "ডিফল্ট ফোন অ্যাপ হিসেবে সেট করুন",
+              fontSize = 14.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = Color(0xFF1F1F1F)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+              text = "কল দিলে নিজস্ব ইন্টারফেসে কল পরিচালনা করতে ডিফল্ট করুন",
+              fontSize = 12.sp,
+              color = Color(0xFF444746)
+            )
+          }
+          Spacer(modifier = Modifier.width(8.dp))
+          Button(
+            onClick = onRequestDefaultDialer,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A73E8)),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+            shape = RoundedCornerShape(20.dp)
+          ) {
+            Text("সেট করুন", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+          }
+        }
+      }
+    }
 
     if (filteredRecords.isEmpty()) {
       Column(

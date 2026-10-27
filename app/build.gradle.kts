@@ -49,8 +49,10 @@ android {
       // AI Studio.
       signingConfig = signingConfigs.getByName("release")
     }
-    debug {}
-}
+    debug {
+      signingConfig = signingConfigs.getByName("debugConfig")
+    }
+  }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11

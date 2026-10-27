@@ -272,7 +272,31 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
     // 1. Record call log with consecutive grouping rule
     repository.recordCall(finalName, cleanNumber, CallType.OUTGOING, finalPhoto, finalAvatar)
 
-    // 2. Execute REAL Phone Call on device
+    // 2. Open our OWN custom in-call interface!
+    _activeCall.value = ActiveCallState(
+      callerName = finalName,
+      phoneNumber = cleanNumber,
+      carrier = "SIM 1",
+      avatarResId = finalAvatar,
+      photoUri = finalPhoto,
+      isIncoming = false,
+      isConnected = false,
+      audioOutput = AudioOutputMode.EARPIECE,
+      durationSeconds = 0
+    )
+
+    // Simulate connection after ringing 2 seconds
+    viewModelScope.launch {
+      delay(2000)
+      _activeCall.value?.let { current ->
+        if (!current.isConnected) {
+          _activeCall.value = current.copy(isConnected = true)
+          startCallTimer()
+        }
+      }
+    }
+
+    // 3. Execute REAL Phone Call on device
     val context = getApplication<Application>()
     val hasCallPermission = ContextCompat.checkSelfPermission(
       context,
@@ -387,6 +411,19 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
     } catch (e: Exception) {
       Log.e("DialerViewModel", "Error ending telecom call", e)
     }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      val context = getApplication<Application>()
+      if (ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
+        val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+        try {
+          telecomManager?.endCall()
+        } catch (e: Exception) {
+          // ignore
+        }
+      }
+    }
+
     _activeCall.value = null
     _showInCallKeypad.value = false
   }
