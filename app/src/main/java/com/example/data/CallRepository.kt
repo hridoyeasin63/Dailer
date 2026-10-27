@@ -1,11 +1,15 @@
 package com.example.data
 
+import android.Manifest
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
+import android.provider.CallLog
 import android.provider.ContactsContract
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.example.model.CallRecord
 import com.example.model.CallType
 import com.example.model.Contact
@@ -19,6 +23,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -129,6 +134,147 @@ class CallRepository(private val context: Context) {
     } catch (e: Exception) {
       Log.e("CallRepository", "Error syncing contacts", e)
     }
+  }
+
+  /**
+   * Syncs real system call logs from CallLog.Calls.
+   * Consecutive calls to the same phone number are grouped together with count incremented.
+   */
+  suspend fun syncDeviceCallLogs() = withContext(Dispatchers.IO) {
+    val hasPermission = ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.READ_CALL_LOG
+    ) == PackageManager.PERMISSION_GRANTED
+
+    if (!hasPermission) {
+      Log.d("CallRepository", "READ_CALL_LOG permission not yet granted")
+      return@withContext
+    }
+
+    try {
+      val projection = arrayOf(
+        CallLog.Calls._ID,
+        CallLog.Calls.NUMBER,
+        CallLog.Calls.CACHED_NAME,
+        CallLog.Calls.TYPE,
+        CallLog.Calls.DATE,
+        CallLog.Calls.DURATION
+      )
+
+      val cursor = context.contentResolver.query(
+        CallLog.Calls.CONTENT_URI,
+        projection,
+        null,
+        null,
+        "${CallLog.Calls.DATE} DESC"
+      )
+
+      data class RawCall(
+        val id: String,
+        val number: String,
+        val cachedName: String?,
+        val typeInt: Int,
+        val timestamp: Long,
+        val duration: Long
+      )
+
+      val rawList = mutableListOf<RawCall>()
+      cursor?.use { c ->
+        val idIdx = c.getColumnIndex(CallLog.Calls._ID)
+        val numIdx = c.getColumnIndex(CallLog.Calls.NUMBER)
+        val nameIdx = c.getColumnIndex(CallLog.Calls.CACHED_NAME)
+        val typeIdx = c.getColumnIndex(CallLog.Calls.TYPE)
+        val dateIdx = c.getColumnIndex(CallLog.Calls.DATE)
+        val durIdx = c.getColumnIndex(CallLog.Calls.DURATION)
+
+        while (c.moveToNext()) {
+          val number = if (numIdx >= 0) c.getString(numIdx) ?: "" else ""
+          if (number.isBlank()) continue
+          val id = if (idIdx >= 0) c.getString(idIdx) ?: UUID.randomUUID().toString() else UUID.randomUUID().toString()
+          val cachedName = if (nameIdx >= 0) c.getString(nameIdx) else null
+          val typeInt = if (typeIdx >= 0) c.getInt(typeIdx) else CallLog.Calls.INCOMING_TYPE
+          val timestamp = if (dateIdx >= 0) c.getLong(dateIdx) else System.currentTimeMillis()
+          val duration = if (durIdx >= 0) c.getLong(durIdx) else 0L
+
+          rawList.add(RawCall(id, number, cachedName, typeInt, timestamp, duration))
+        }
+      }
+
+      if (rawList.isNotEmpty()) {
+        val groupedResult = mutableListOf<CallRecord>()
+        val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
+
+        for (raw in rawList) {
+          val lastGroup = groupedResult.lastOrNull()
+          if (lastGroup != null && isSamePhoneNumber(lastGroup.phoneNumber, raw.number)) {
+            // Group consecutive calls to the same number together
+            val updated = lastGroup.copy(count = lastGroup.count + 1)
+            groupedResult[groupedResult.lastIndex] = updated
+          } else {
+            val contact = findContactByNumber(raw.number)
+            val displayName = when {
+              !raw.cachedName.isNullOrBlank() -> raw.cachedName
+              contact != null -> contact.name
+              else -> raw.number
+            }
+            val photoUri = contact?.photoUri
+            val avatarRes = contact?.avatarResId
+            val isUnknown = contact == null && (raw.cachedName.isNullOrBlank() || displayName == raw.number)
+
+            val callType = when (raw.typeInt) {
+              CallLog.Calls.OUTGOING_TYPE -> CallType.OUTGOING
+              CallLog.Calls.MISSED_TYPE, CallLog.Calls.REJECTED_TYPE -> CallType.MISSED
+              CallLog.Calls.BLOCKED_TYPE -> CallType.BLOCKED
+              else -> CallType.INCOMING
+            }
+
+            groupedResult.add(
+              CallRecord(
+                id = "sys_${raw.id}",
+                name = displayName,
+                phoneNumber = raw.number,
+                avatarResId = avatarRes,
+                photoUri = photoUri,
+                type = callType,
+                count = 1,
+                simSlot = "SIM 1",
+                location = "Mobile",
+                timeFormatted = timeFormat.format(Date(raw.timestamp)),
+                section = formatSectionHeader(raw.timestamp),
+                isUnknownNumber = isUnknown,
+                timestamp = raw.timestamp
+              )
+            )
+          }
+        }
+
+        _callHistory.value = groupedResult
+        saveCallHistory(groupedResult)
+      }
+    } catch (e: SecurityException) {
+      Log.d("CallRepository", "READ_CALL_LOG security exception: ${e.message}")
+    } catch (e: Exception) {
+      Log.e("CallRepository", "Error querying CallLog.Calls", e)
+    }
+  }
+
+  private fun formatSectionHeader(timestamp: Long): String {
+    val calNow = Calendar.getInstance()
+    val calCall = Calendar.getInstance().apply { timeInMillis = timestamp }
+
+    val isSameDay = calNow.get(Calendar.YEAR) == calCall.get(Calendar.YEAR) &&
+      calNow.get(Calendar.DAY_OF_YEAR) == calCall.get(Calendar.DAY_OF_YEAR)
+
+    if (isSameDay) return "Today"
+
+    calNow.add(Calendar.DAY_OF_YEAR, -1)
+    val isYesterday = calNow.get(Calendar.YEAR) == calCall.get(Calendar.YEAR) &&
+      calNow.get(Calendar.DAY_OF_YEAR) == calCall.get(Calendar.DAY_OF_YEAR)
+
+    if (isYesterday) return "Yesterday"
+
+    val sdf = SimpleDateFormat("dd MMM", Locale.getDefault())
+    return sdf.format(Date(timestamp))
   }
 
   fun addContact(name: String, phoneNumber: String, label: String = "Mobile", photoUri: String? = null) {

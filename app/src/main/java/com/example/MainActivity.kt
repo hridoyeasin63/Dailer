@@ -2,6 +2,7 @@ package com.example
 
 import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -40,6 +41,7 @@ import com.example.ui.components.AppDrawerSheet
 import com.example.ui.components.DialerBottomBar
 import com.example.ui.dialogs.AddContactDialog
 import com.example.ui.dialogs.IncomingGestureDialog
+import com.example.ui.dialogs.SimSelectionDialog
 import com.example.ui.screens.ActiveCallScreen
 import com.example.ui.screens.BlockedNumbersScreen
 import com.example.ui.screens.ContactsScreen
@@ -75,6 +77,9 @@ class MainActivity : ComponentActivity() {
   override fun onResume() {
     super.onResume()
     viewModel.checkDefaultDialerStatus()
+    viewModel.syncContacts()
+    viewModel.syncCallLogs()
+    viewModel.refreshSims()
   }
 
   private fun handleDialIntent(intent: Intent?) {
@@ -109,6 +114,8 @@ fun DialerApp(viewModel: DialerViewModel) {
   val t9Matches by viewModel.t9Matches.collectAsState()
   val activeCall by viewModel.activeCall.collectAsState()
   val isDefaultDialer by viewModel.isDefaultDialer.collectAsState()
+  val availableSims by viewModel.availableSims.collectAsState()
+  val pendingSimCall by viewModel.pendingSimCall.collectAsState()
   val showGestureDialog by viewModel.showGestureDialog.collectAsState()
   val addContactPrefill by viewModel.addContactPrefill.collectAsState()
   val showInCallKeypad by viewModel.showInCallKeypad.collectAsState()
@@ -121,23 +128,30 @@ fun DialerApp(viewModel: DialerViewModel) {
     viewModel.checkDefaultDialerStatus()
   }
 
-  // Request permissions on launch for real device contacts and calls
+  // Request all permissions on launch for device contacts, real calls, call history and SIMs
   val permissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestMultiplePermissions()
-  ) { permissions ->
-    if (permissions[Manifest.permission.READ_CONTACTS] == true) {
-      viewModel.syncContacts()
-    }
+  ) { _ ->
+    viewModel.syncContacts()
+    viewModel.syncCallLogs()
+    viewModel.refreshSims()
     viewModel.checkDefaultDialerStatus()
   }
 
   LaunchedEffect(Unit) {
-    permissionLauncher.launch(
-      arrayOf(
-        Manifest.permission.READ_CONTACTS,
-        Manifest.permission.CALL_PHONE
-      )
-    )
+    val perms = mutableListOf(
+      Manifest.permission.READ_CONTACTS,
+      Manifest.permission.CALL_PHONE,
+      Manifest.permission.READ_CALL_LOG,
+      Manifest.permission.WRITE_CALL_LOG,
+      Manifest.permission.READ_PHONE_STATE
+    ).apply {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        add(Manifest.permission.READ_PHONE_NUMBERS)
+      }
+    }.toTypedArray()
+
+    permissionLauncher.launch(perms)
   }
 
   // Display snackbars
@@ -326,6 +340,21 @@ fun DialerApp(viewModel: DialerViewModel) {
           viewModel.saveNewContact(name, number, label, photoUri)
         },
         onDismiss = { viewModel.closeAddContact() }
+      )
+    }
+
+    // DIALOG: SIM selection dialog for dual SIM calls
+    pendingSimCall?.let { target ->
+      SimSelectionDialog(
+        recipientName = target.name,
+        recipientNumber = target.phoneNumber,
+        simList = availableSims,
+        onSelectSim = { sim ->
+          viewModel.confirmCallWithSim(sim)
+        },
+        onDismiss = {
+          viewModel.cancelSimSelection()
+        }
       )
     }
   }

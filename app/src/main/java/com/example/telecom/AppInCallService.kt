@@ -12,6 +12,7 @@ class AppInCallService : InCallService() {
     var activeTelecomCall: Call? = null
     var onCallAddedListener: ((Call) -> Unit)? = null
     var onCallRemovedListener: ((Call) -> Unit)? = null
+    var onCallStateChangedListener: ((Call, Int) -> Unit)? = null
   }
 
   override fun onCallAdded(call: Call) {
@@ -35,6 +36,7 @@ class AppInCallService : InCallService() {
       override fun onStateChanged(call: Call, state: Int) {
         super.onStateChanged(call, state)
         Log.d("AppInCallService", "Call state changed to $state")
+        onCallStateChangedListener?.invoke(call, state)
         if (state == Call.STATE_DISCONNECTED) {
           if (activeTelecomCall == call) {
             activeTelecomCall = null

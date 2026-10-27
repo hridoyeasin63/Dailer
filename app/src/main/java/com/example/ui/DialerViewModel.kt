@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.telecom.Call
 import android.telecom.TelecomManager
 import android.util.Log
@@ -23,7 +24,9 @@ import com.example.model.CallType
 import com.example.model.Contact
 import com.example.model.FilterTab
 import com.example.model.IncomingGestureMode
+import com.example.model.SimInfo
 import com.example.telecom.AppInCallService
+import com.example.util.SimManager
 import com.example.util.T9MatchResult
 import com.example.util.T9Matcher
 import com.example.util.ToneFeedback
@@ -36,6 +39,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+data class CallTarget(
+  val name: String,
+  val phoneNumber: String,
+  val avatarRes: Int? = null,
+  val photoUri: String? = null
+)
 
 enum class Screen {
   HOME,
@@ -74,6 +84,13 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
   private val _isDefaultDialer = MutableStateFlow(false)
   val isDefaultDialer: StateFlow<Boolean> = _isDefaultDialer.asStateFlow()
 
+  // Multi-SIM state & selection
+  private val _availableSims = MutableStateFlow<List<SimInfo>>(emptyList())
+  val availableSims: StateFlow<List<SimInfo>> = _availableSims.asStateFlow()
+
+  private val _pendingSimCall = MutableStateFlow<CallTarget?>(null)
+  val pendingSimCall: StateFlow<CallTarget?> = _pendingSimCall.asStateFlow()
+
   // Dialogs
   private val _showGestureDialog = MutableStateFlow(false)
   val showGestureDialog: StateFlow<Boolean> = _showGestureDialog.asStateFlow()
@@ -91,6 +108,8 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
 
   init {
     syncContacts()
+    syncCallLogs()
+    refreshSims()
     checkDefaultDialerStatus()
 
     // Listen to real telecom calls if app is default phone app
@@ -101,6 +120,7 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
       val photo = contact?.photoUri
       val avatar = contact?.avatarResId
       val isRinging = telecomCall.state == Call.STATE_RINGING
+      val isActive = telecomCall.state == Call.STATE_ACTIVE
 
       _activeCall.value = ActiveCallState(
         callerName = name,
@@ -109,12 +129,29 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
         avatarResId = avatar,
         photoUri = photo,
         isIncoming = isRinging,
-        isConnected = telecomCall.state == Call.STATE_ACTIVE,
+        isConnected = isActive,
         audioOutput = AudioOutputMode.EARPIECE,
         durationSeconds = 0
       )
-      if (!isRinging) {
+      if (isActive) {
         startCallTimer()
+      }
+    }
+
+    AppInCallService.onCallStateChangedListener = { telecomCall, state ->
+      Log.d("DialerViewModel", "Telecom Call State Changed: $state")
+      when (state) {
+        Call.STATE_ACTIVE -> {
+          _activeCall.value?.let { current ->
+            if (!current.isConnected) {
+              _activeCall.value = current.copy(isConnected = true)
+              startCallTimer()
+            }
+          }
+        }
+        Call.STATE_DISCONNECTED -> {
+          endCall()
+        }
       }
     }
 
@@ -127,6 +164,16 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
     viewModelScope.launch {
       repository.syncDeviceContacts()
     }
+  }
+
+  fun syncCallLogs() {
+    viewModelScope.launch {
+      repository.syncDeviceCallLogs()
+    }
+  }
+
+  fun refreshSims() {
+    _availableSims.value = SimManager.getAvailableSims(getApplication())
   }
 
   fun checkDefaultDialerStatus() {
@@ -253,8 +300,8 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
     _snackbarMessage.value = null
   }
 
-  // REAL CALL ACTION
-  fun startOutgoingCall(
+  // CALL ACTIONS & MULTI-SIM SELECTION
+  fun initiateCall(
     name: String,
     phoneNumber: String,
     avatarRes: Int? = null,
@@ -264,69 +311,146 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
     val cleanNumber = phoneNumber.trim()
     if (cleanNumber.isBlank()) return
 
+    refreshSims()
+    val sims = _availableSims.value
+
+    if (sims.size > 1) {
+      // Prompt user with SIM selection dialog
+      _pendingSimCall.value = CallTarget(name, cleanNumber, avatarRes, photoUri)
+    } else {
+      executeCall(name, cleanNumber, avatarRes, photoUri, sims.firstOrNull())
+    }
+  }
+
+  fun confirmCallWithSim(selectedSim: SimInfo) {
+    toneFeedback.playHaptic()
+    val target = _pendingSimCall.value ?: return
+    _pendingSimCall.value = null
+    executeCall(target.name, target.phoneNumber, target.avatarRes, target.photoUri, selectedSim)
+  }
+
+  fun cancelSimSelection() {
+    _pendingSimCall.value = null
+  }
+
+  fun startOutgoingCall(
+    name: String,
+    phoneNumber: String,
+    avatarRes: Int? = null,
+    photoUri: String? = null
+  ) {
+    initiateCall(name, phoneNumber, avatarRes, photoUri)
+  }
+
+  fun executeCall(
+    name: String,
+    phoneNumber: String,
+    avatarRes: Int? = null,
+    photoUri: String? = null,
+    selectedSim: SimInfo? = null
+  ) {
+    val cleanNumber = phoneNumber.trim()
+    if (cleanNumber.isBlank()) return
+
     val contact = repository.findContactByNumber(cleanNumber)
     val finalName = if (name.isNotBlank() && name != cleanNumber) name else (contact?.name ?: cleanNumber)
     val finalPhoto = photoUri ?: contact?.photoUri
     val finalAvatar = avatarRes ?: contact?.avatarResId
+    val carrierLabel = selectedSim?.title ?: "SIM 1"
 
     // 1. Record call log with consecutive grouping rule
     repository.recordCall(finalName, cleanNumber, CallType.OUTGOING, finalPhoto, finalAvatar)
 
-    // 2. Open our OWN custom in-call interface!
-    _activeCall.value = ActiveCallState(
-      callerName = finalName,
-      phoneNumber = cleanNumber,
-      carrier = "SIM 1",
-      avatarResId = finalAvatar,
-      photoUri = finalPhoto,
-      isIncoming = false,
-      isConnected = false,
-      audioOutput = AudioOutputMode.EARPIECE,
-      durationSeconds = 0
-    )
+    val context = getApplication<Application>()
+    val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+    val callUri = Uri.parse("tel:${Uri.encode(cleanNumber)}")
 
-    // Simulate connection after ringing 2 seconds
-    viewModelScope.launch {
-      delay(2000)
-      _activeCall.value?.let { current ->
-        if (!current.isConnected) {
-          _activeCall.value = current.copy(isConnected = true)
-          startCallTimer()
-        }
+    // 2. Prepare SIM selection extras
+    val simBundle = Bundle().apply {
+      if (selectedSim?.phoneAccountHandle != null) {
+        putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, selectedSim.phoneAccountHandle)
+      }
+      if (selectedSim != null) {
+        putInt("com.android.phone.extra.slot", selectedSim.slotIndex)
+        putInt("simSlot", selectedSim.slotIndex)
+        putInt("slot", selectedSim.slotIndex)
+        putInt("sim_slot", selectedSim.slotIndex)
+        putInt("subscription_id", selectedSim.subscriptionId)
+        putInt("android.telephony.extra.SUBSCRIPTION_INDEX", selectedSim.subscriptionId)
       }
     }
 
-    // 3. Execute REAL Phone Call on device
-    val context = getApplication<Application>()
-    val hasCallPermission = ContextCompat.checkSelfPermission(
-      context,
-      Manifest.permission.CALL_PHONE
-    ) == PackageManager.PERMISSION_GRANTED
+    // 3. Handle default dialer vs non-default dialer
+    if (_isDefaultDialer.value) {
+      // In default dialer mode, show in-call UI in dialing state (NOT connected yet!)
+      _activeCall.value = ActiveCallState(
+        callerName = finalName,
+        phoneNumber = cleanNumber,
+        carrier = carrierLabel,
+        avatarResId = finalAvatar,
+        photoUri = finalPhoto,
+        isIncoming = false,
+        isConnected = false, // Connecting / Dialing state; real timer starts ONLY when telecom call becomes ACTIVE
+        audioOutput = AudioOutputMode.EARPIECE,
+        durationSeconds = 0
+      )
 
-    try {
-      if (hasCallPermission) {
-        val callIntent = Intent(Intent.ACTION_CALL).apply {
-          data = Uri.parse("tel:${Uri.encode(cleanNumber)}")
-          flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(callIntent)
-      } else {
-        val dialIntent = Intent(Intent.ACTION_DIAL).apply {
-          data = Uri.parse("tel:${Uri.encode(cleanNumber)}")
-          flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(dialIntent)
-      }
-    } catch (e: Exception) {
-      Log.e("DialerViewModel", "Failed to place call via ACTION_CALL", e)
       try {
-        val dialIntent = Intent(Intent.ACTION_DIAL).apply {
-          data = Uri.parse("tel:${Uri.encode(cleanNumber)}")
+        telecomManager?.placeCall(callUri, simBundle)
+      } catch (e: Exception) {
+        Log.e("DialerViewModel", "telecomManager.placeCall failed, falling back to Intent", e)
+        val callIntent = Intent(Intent.ACTION_CALL).apply {
+          data = callUri
+          putExtras(simBundle)
           flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
-        context.startActivity(dialIntent)
-      } catch (err: Exception) {
-        showSnackbar("Calling $cleanNumber")
+        try {
+          context.startActivity(callIntent)
+        } catch (err: Exception) {
+          val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+            data = callUri
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+          }
+          context.startActivity(dialIntent)
+        }
+      }
+    } else {
+      // If NOT default dialer, DO NOT show fake internal in-call UI!
+      // Delegate cleanly to Android system telephony using ACTION_CALL with selected SIM
+      val hasCallPermission = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.CALL_PHONE
+      ) == PackageManager.PERMISSION_GRANTED
+
+      try {
+        if (hasCallPermission) {
+          val callIntent = Intent(Intent.ACTION_CALL).apply {
+            data = callUri
+            putExtras(simBundle)
+            if (selectedSim?.phoneAccountHandle != null) {
+              putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, selectedSim.phoneAccountHandle)
+            }
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+          }
+          context.startActivity(callIntent)
+        } else {
+          val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+            data = callUri
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+          }
+          context.startActivity(dialIntent)
+        }
+      } catch (e: Exception) {
+        Log.e("DialerViewModel", "Failed to launch call intent", e)
+        try {
+          val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+            data = callUri
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+          }
+          context.startActivity(dialIntent)
+        } catch (err: Exception) {
+          showSnackbar("Calling $cleanNumber")
+        }
       }
     }
   }
@@ -426,6 +550,7 @@ class DialerViewModel(application: Application) : AndroidViewModel(application) 
 
     _activeCall.value = null
     _showInCallKeypad.value = false
+    syncCallLogs()
   }
 
   fun toggleMute() {
