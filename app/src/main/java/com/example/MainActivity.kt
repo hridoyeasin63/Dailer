@@ -1,6 +1,7 @@
 package com.example
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -57,9 +58,35 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
 
+    handleDialIntent(intent)
+
     setContent {
       MyApplicationTheme {
         DialerApp(viewModel = viewModel)
+      }
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    handleDialIntent(intent)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    viewModel.checkDefaultDialerStatus()
+  }
+
+  private fun handleDialIntent(intent: Intent?) {
+    val uri = intent?.data
+    if (uri?.scheme == "tel") {
+      val number = uri.schemeSpecificPart
+      if (!number.isNullOrBlank()) {
+        viewModel.setScreen(Screen.KEYPAD)
+        viewModel.onKeypadClear()
+        for (ch in number) {
+          viewModel.onKeypadPress(ch)
+        }
       }
     }
   }
@@ -81,10 +108,18 @@ fun DialerApp(viewModel: DialerViewModel) {
   val keypadInput by viewModel.keypadInput.collectAsState()
   val t9Matches by viewModel.t9Matches.collectAsState()
   val activeCall by viewModel.activeCall.collectAsState()
+  val isDefaultDialer by viewModel.isDefaultDialer.collectAsState()
   val showGestureDialog by viewModel.showGestureDialog.collectAsState()
   val addContactPrefill by viewModel.addContactPrefill.collectAsState()
   val showInCallKeypad by viewModel.showInCallKeypad.collectAsState()
   val snackbarMessage by viewModel.snackbarMessage.collectAsState()
+
+  // Default dialer request launcher
+  val defaultDialerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.StartActivityForResult()
+  ) {
+    viewModel.checkDefaultDialerStatus()
+  }
 
   // Request permissions on launch for real device contacts and calls
   val permissionLauncher = rememberLauncherForActivityResult(
@@ -93,6 +128,7 @@ fun DialerApp(viewModel: DialerViewModel) {
     if (permissions[Manifest.permission.READ_CONTACTS] == true) {
       viewModel.syncContacts()
     }
+    viewModel.checkDefaultDialerStatus()
   }
 
   LaunchedEffect(Unit) {
@@ -134,7 +170,7 @@ fun DialerApp(viewModel: DialerViewModel) {
             viewModel.triggerSimulatedIncomingCall(
               name = "Better Half",
               phoneNumber = "+880 1886-406968",
-              photoUri = null // will use avatarRes if passed or contact's photo
+              photoUri = null
             )
           },
           onSimulateIncomingCallNoPhoto = {
@@ -213,6 +249,15 @@ fun DialerApp(viewModel: DialerViewModel) {
 
               Screen.SETTINGS -> SettingsScreen(
                 gestureMode = gestureMode,
+                isDefaultDialer = isDefaultDialer,
+                onRequestDefaultDialer = {
+                  val requestIntent = viewModel.getRequestDefaultDialerIntent()
+                  if (requestIntent != null) {
+                    defaultDialerLauncher.launch(requestIntent)
+                  } else {
+                    viewModel.showSnackbar("This app is already your default dialer")
+                  }
+                },
                 onOpenGestureDialog = { viewModel.setShowGestureDialog(true) },
                 onBack = { viewModel.setScreen(Screen.HOME) },
                 onOpenBlockedNumbers = { viewModel.setScreen(Screen.BLOCKED_NUMBERS) }

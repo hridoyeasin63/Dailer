@@ -190,6 +190,20 @@ class CallRepository(private val context: Context) {
     saveCallHistory(_callHistory.value)
   }
 
+  private fun isSamePhoneNumber(num1: String, num2: String): Boolean {
+    val clean1 = num1.filter { it.isDigit() }
+    val clean2 = num2.filter { it.isDigit() }
+    if (clean1.isEmpty() || clean2.isEmpty()) return num1.trim() == num2.trim()
+    if (clean1 == clean2) return true
+    val minLen = minOf(clean1.length, clean2.length)
+    if (minLen >= 7) {
+      val sub1 = clean1.takeLast(minLen)
+      val sub2 = clean2.takeLast(minLen)
+      if (sub1 == sub2) return true
+    }
+    return false
+  }
+
   fun recordCall(
     name: String,
     phoneNumber: String,
@@ -206,23 +220,42 @@ class CallRepository(private val context: Context) {
     val sdf = SimpleDateFormat("h:mm a", Locale.getDefault())
     val timeFormatted = sdf.format(Date())
 
-    val newRecord = CallRecord(
-      id = UUID.randomUUID().toString(),
-      name = finalName,
-      phoneNumber = phoneNumber,
-      avatarResId = finalAvatar,
-      photoUri = finalPhoto,
-      type = type,
-      count = 1,
-      simSlot = "SIM 1",
-      location = "Mobile",
-      timeFormatted = timeFormatted,
-      section = "Today",
-      isUnknownNumber = isUnknown,
-      timestamp = System.currentTimeMillis()
-    )
+    val currentList = _callHistory.value
+    val latestRecord = currentList.firstOrNull()
 
-    val updatedList = listOf(newRecord) + _callHistory.value
+    // Rule:
+    // If consecutive calls to the SAME number -> group into the single top record and increment count (e.g. 2, 3...)
+    // If another number was called in between, or this is a different number -> add as a new separate entry!
+    val updatedList = if (latestRecord != null && isSamePhoneNumber(latestRecord.phoneNumber, phoneNumber)) {
+      val updatedLatest = latestRecord.copy(
+        count = latestRecord.count + 1,
+        timeFormatted = timeFormatted,
+        type = type,
+        name = if (name.isNotBlank() && name != phoneNumber) name else latestRecord.name,
+        photoUri = finalPhoto ?: latestRecord.photoUri,
+        avatarResId = finalAvatar ?: latestRecord.avatarResId,
+        timestamp = System.currentTimeMillis()
+      )
+      listOf(updatedLatest) + currentList.drop(1)
+    } else {
+      val newRecord = CallRecord(
+        id = UUID.randomUUID().toString(),
+        name = finalName,
+        phoneNumber = phoneNumber,
+        avatarResId = finalAvatar,
+        photoUri = finalPhoto,
+        type = type,
+        count = 1,
+        simSlot = "SIM 1",
+        location = "Mobile",
+        timeFormatted = timeFormatted,
+        section = "Today",
+        isUnknownNumber = isUnknown,
+        timestamp = System.currentTimeMillis()
+      )
+      listOf(newRecord) + currentList
+    }
+
     _callHistory.value = updatedList
     saveCallHistory(updatedList)
   }
